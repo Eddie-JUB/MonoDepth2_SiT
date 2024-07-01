@@ -1,0 +1,167 @@
+import os
+import random
+import numpy as np
+from PIL import Image  # using pillow-simd for increased speed
+import torch
+import torch.utils.data as data
+from torchvision import transforms
+
+def pil_loader(path):
+    with open(path, 'rb') as f:
+        with Image.open(f) as img:
+            return img.convert('RGB')
+
+class MonoDataset(data.Dataset):
+    def __init__(self,
+                 data_path,
+                 filenames,
+                 height,
+                 width,
+                 frame_idxs,
+                 num_scales,
+                 is_train=False,
+                 img_ext='.jpg'):
+        super(MonoDataset, self).__init__()
+
+        self.data_path = data_path
+        self.filenames = filenames
+        self.height = height
+        self.width = width
+        self.num_scales = num_scales
+        self.interp = Image.ANTIALIAS
+
+        self.frame_idxs = frame_idxs
+
+        self.is_train = is_train
+        self.img_ext = img_ext
+
+        self.loader = pil_loader
+        self.to_tensor = transforms.ToTensor()
+
+        try:
+            self.brightness = (0.8, 1.2)
+            self.contrast = (0.8, 1.2)
+            self.saturation = (0.8, 1.2)
+            self.hue = (-0.1, 0.1)
+            self.color_jitter = transforms.ColorJitter(
+                self.brightness, self.contrast, self.saturation, self.hue)
+        except TypeError:
+            self.brightness = 0.2
+            self.contrast = 0.2
+            self.saturation = 0.2
+            self.hue = 0.1
+            self.color_jitter = transforms.ColorJitter(
+                brightness=self.brightness, contrast=self.contrast,
+                saturation=self.saturation, hue=self.hue)
+
+        self.resize = {}
+        for i in range(self.num_scales):
+            s = 2 ** i
+            self.resize[i] = transforms.Resize((self.height // s, self.width // s),
+                                               interpolation=self.interp)
+
+        self.load_depth = self.check_depth()
+
+    def preprocess(self, inputs, color_aug):
+        for k in list(inputs):
+            frame = inputs[k]
+            if "color" in k:
+                n, im, i = k
+                for scale in range(self.num_scales):
+                    if (n, im, scale - 1) in inputs:
+                        inputs[(n, im, scale)] = self.resize[scale](inputs[(n, im, scale - 1)])
+                    else:
+                        inputs[(n, im, scale)] = self.resize[scale](frame)
+
+        for k in list(inputs):
+            f = inputs[k]
+            if "color" in k:
+                n, im, i = k
+                inputs[(n, im, i)] = self.to_tensor(f)
+                inputs[(n + "_aug", im, i)] = self.to_tensor(color_aug(f))
+
+    def __len__(self):
+        return len(self.filenames)
+
+    def __getitem__(self, index):
+        inputs = {}
+
+        do_color_aug = self.is_train and random.random() > 0.5
+        do_flip = self.is_train and random.random() > 0.5
+
+        line = self.filenames[index].split()
+        folder = line[0]
+
+        if len(line) == 3:
+            frame_index = int(line[1])
+        else:
+            frame_index = 0
+
+        if frame_index < 0:
+            print(f"Invalid frame_index: {frame_index}, resetting to 0")
+            frame_index = 0
+
+        if len(line) == 3:
+            side = line[2]
+        else:
+            side = None
+
+        # print(f"Processing folder: {folder}, frame_index: {frame_index}, side: {side}")
+
+        for i in self.frame_idxs:
+            if i == "s":
+                other_side = {"r": "l", "l": "r"}[side]
+                inputs[("color", i, -1)] = self.get_color(folder, frame_index, other_side, do_flip)
+            else:
+                inputs[("color", i, -1)] = self.get_color(folder, frame_index + i, side, do_flip)
+
+        for scale in range(self.num_scales):
+            K = self.K.copy()
+            K[0, :] *= self.width // (2 ** scale)
+            K[1, :] *= self.height // (2 ** scale)
+            inv_K = np.linalg.pinv(K)
+            inputs[("K", scale)] = torch.from_numpy(K)
+            inputs[("inv_K", scale)] = torch.from_numpy(inv_K)
+
+        if do_color_aug:
+            color_aug = self.color_jitter
+        else:
+            color_aug = lambda x: x  # identity function when no augmentation
+
+        self.preprocess(inputs, color_aug)
+
+        for i in self.frame_idxs:
+            del inputs[("color", i, -1)]
+            del inputs[("color_aug", i, -1)]
+
+        if self.load_depth:
+            depth_gt = self.get_depth(folder, frame_index, side, do_flip)
+            inputs["depth_gt"] = np.expand_dims(depth_gt, 0)
+            inputs["depth_gt"] = torch.from_numpy(inputs["depth_gt"].astype(np.float32))
+
+        if "s" in self.frame_idxs:
+            stereo_T = np.eye(4, dtype=np.float32)
+            baseline_sign = -1 if do_flip else 1
+            side_sign = -1 if side == "l" else 1
+            stereo_T[0, 3] = side_sign * baseline_sign * 0.1
+            inputs["stereo_T"] = torch.from_numpy(stereo_T)
+
+        return inputs
+
+    def get_color(self, folder, frame_index, side, do_flip):
+        color = self.loader(self.get_image_path(folder, frame_index, side))
+        if do_flip:
+            color = color.transpose(Image.FLIP_LEFT_RIGHT)
+        return color
+
+    def get_image_path(self, folder, frame_index, side):
+        f_str = "{:010d}{}".format(frame_index, self.img_ext)
+        image_path = os.path.join(self.data_path, folder, "image_02", f_str)
+        # print(f"Generated image path: {image_path}")
+        return image_path
+
+    def check_depth(self):
+        raise NotImplementedError
+
+    def get_depth(self, folder, frame_index, side, do_flip):
+        raise NotImplementedError
