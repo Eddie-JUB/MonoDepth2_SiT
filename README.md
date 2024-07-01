@@ -134,6 +134,17 @@ By default models and tensorboard event files are saved to ~/tmp/<model_name>. T
 python train_sit.py --model_name mono_model --data_path path/to/dataset --split sit --dataset sit
 
 ```
+To check training session you can use tensorboard as one option:
+
+```
+# run tensorboard
+tensorboard --logdir=your/log/dir
+
+# access via localhost at http://localhost:6006
+http://localhost:6006
+```
+
+
 
 ## SiT Evaluation
 To prepare the ground truth depth maps run:
