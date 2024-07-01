@@ -31,7 +31,30 @@ cudnn 7.6.5.32-1+cuda10.1
 
 ```
 
-For Docker user, you can pull docker image and run as you wish:
+For Docker user, you can use 1)Docker file or directrly pull 2)Docker image and run as you wish:
+
+1) Dockerfile
+```
+# Build the Docker Image
+docker build -t monodepth2_sit_custom:latest .
+
+# Run the Docker Container
+docker run -it --gpus all --ipc=host \
+    -v /tmp/.X11-unix:/tmp/.X11-unix \
+    -v $HOME/.Xauthority:/root/.Xauthority \
+    -v /home/your/path:/home/your/path \
+    -e NVIDIA_VISIBLE_DEVICES=all \
+    -e NVIDIA_DRIVER_CAPABILITIES=all \
+    -e DISPLAY=$DISPLAY \
+    -e QT_X11_NO_MITSHM=1 \
+    --privileged --net=host \
+    --name monodepth2_sit_custom monodepth2_sit_custom:latest /bin/bash
+
+```
+
+
+
+2) Docker image
 ```shell
 
 # pull docker image
@@ -53,6 +76,8 @@ docker run -it --gpus all --ipc=host \
 docker exec -it monodepth2_sit /bin/bash
 
 ```
+
+
 
 
 ## 🖼️ Test demo images with pre-trained models
